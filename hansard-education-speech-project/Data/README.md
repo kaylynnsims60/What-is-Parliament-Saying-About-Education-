@@ -22,18 +22,8 @@ To reproduce the project:
 
 1. Download the raw Hansard data from the source listed above.
 2. Place the raw files in this folder: `Data/raw/`
-3. Run the data preparation scripts in the `Code/` folder in the order described in the main repository `README.md`.
+3. Run the data preparation scripts in the `Code/` folder in the order described in the main repository `README.md`.  
 
-## Expected Contents
-
-This folder should contain the unmodified raw source files used in the project.
-
-Example contents may include:
-- raw Hansard CSV files
-- raw metadata files
-- source documentation files
-
-If reproducing the project locally, do not alter the raw files stored here. All cleaning, filtering, and transformation steps should be carried out through the scripts in `Code/`.
 
 ## Notes
 
