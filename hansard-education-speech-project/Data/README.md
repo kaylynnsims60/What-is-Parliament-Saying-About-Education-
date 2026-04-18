@@ -28,3 +28,26 @@ To reproduce the project:
 ## Notes
 
 Because the raw data are large, they were not uploaded directly to GitHub. The repository instead provides the full transformation pipeline used to generate the processed and derived datasets locally.
+
+
+
+# Processed Data
+
+This folder is intended to store cleaned, filtered, merged, or otherwise processed datasets created from the raw Hansard source data.
+
+## Data Description
+
+The files in this folder are generated through the project workflow and are used for downstream analysis. These include cleaned master datasets, filtered education-related corpora, validation datasets, and other working files.
+
+Some processed files used in the project were too large to store directly in this GitHub repository. They can be regenerated locally by running the scripts in `Code/` after obtaining the raw data.
+
+## How to Reproduce Processed Files
+
+1. Obtain the raw Hansard data and place those files in `Data/raw/`
+2. Run the data preparation and filtering scripts in `Code/`
+3. The resulting processed datasets will be written to this folder
+
+
+## Notes
+
+Files in this folder are derived from the raw Hansard corpus and should be treated as generated data rather than original source data.
