@@ -1,0 +1,849 @@
+---
+title: "What is Parliament Saying About Education?"
+author: "Kaylynn Driggers"
+date: "2026-04-05"
+output: pdf_document
+---
+##Set Up
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidylog)
+library(readxl)
+library(socsci)
+library(tidytext)
+library(quanteda)
+library(readr)
+library(dplyr)
+library(stringr)
+library(irr) #for cohen's kappa
+library(tinytex)
+```
+
+##Introduction
+
+This project creates an education speech corpus from the Canadian Hansard Files from 1901-2019. 
+
+#Part 1
+
+## Creating a For-Loop to Create a Master Hansard Speech File
+```{r, include=FALSE}
+# Set the path to your master folder
+master_folder <- "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Hansard Speech Data"
+
+# Get a list of year folders inside the master folder
+folder_list <- list.dirs(master_folder, recursive = FALSE, full.names = TRUE)
+
+# Count total number of year folders
+total_years <- length(folder_list)
+
+# Set seed for reproducibility
+set.seed(2026)
+
+# Create empty list to store sampled data
+sample_list <- list()
+counter <- 1
+
+# Outer loop: go through each year folder
+for (i in seq_along(folder_list)) {
+  
+  folder <- folder_list[i]
+  year <- basename(folder)
+  
+  # Find all CSV files inside the year folder, including month subfolders
+  file_list <- list.files(folder,
+                          pattern = "\\.csv$",
+                          full.names = TRUE,
+                          recursive = TRUE,
+                          ignore.case = TRUE)
+  
+  cat("Processing year", year, "(", i, "of", total_years, "):",
+      length(file_list), "files found\n")
+  
+  # Inner loop: go through each CSV file
+  for (file in file_list) {
+    
+    # Read the CSV
+    temp_data <- read.csv(file, stringsAsFactors = FALSE)
+    
+    # Skip empty files
+    if (nrow(temp_data) == 0) {
+      next
+    }
+    
+    # Sample up to 100 rows from this file
+    sample_n <- min(100, nrow(temp_data))
+    sampled_data <- temp_data[sample(seq_len(nrow(temp_data)), size = sample_n), ]
+    
+    # Extract filename without .csv
+    file_name <- tools::file_path_sans_ext(basename(file))
+    
+    # Convert filename to Date
+    speech_date <- as.Date(file_name, format = "%Y-%m-%d")
+    
+    # Add metadata columns
+    sampled_data$speech_date <- speech_date
+    sampled_data$year <- as.integer(format(speech_date, "%Y"))
+    sampled_data$month <- as.integer(format(speech_date, "%m"))
+    sampled_data$day <- as.integer(format(speech_date, "%d"))
+    sampled_data$weekday <- weekdays(speech_date)
+    sampled_data$source_file <- basename(file)
+    sampled_data$source_path <- file
+    
+    # Store in list
+    sample_list[[counter]] <- sampled_data
+    counter <- counter + 1
+  }
+  
+  cat("Finished year", year, "-", i, "of", total_years, "completed\n\n")
+}
+
+# Combine all sampled data at the end
+master_sample <- do.call(rbind, sample_list)
+
+# Write the sampled master file
+write.csv(master_sample,
+          file = file.path(master_folder, "master_sample_file.csv"),
+          row.names = FALSE)
+
+cat("Done. Sample master file written with", nrow(master_sample),
+    "rows and", ncol(master_sample), "columns.\n")
+```
+This loop creates a master Hansard speech file from the large raw data found 
+online from 1900 to 2019. To simualte stratified random sampling, I sampled 100 
+rows from each speech file in the dataset, which resulted in 1312018 obs. of 
+22 variables, which is still pretty large, so from here, 
+I will apply a dictionary-based technique to gather just the education-related speeches. 
+
+
+##Using Dictionary-Based Aproach to Keep Only Education-Related Speeches
+```{r}
+#Creating dictionary
+education_pattern <- regex(
+  "ducation|school|universit|student|tuition|textbook|curriculum|teach|colleg|postsec|post-sec|research|vocational|apprenticeshi|academ",
+  ignore_case = TRUE)
+#Applying the dictionary
+education_speeches <- master_sample %>%
+  filter(!is.na(speechtext), speechtext != "", str_detect(speechtext, education_pattern))
+
+write.csv(education_speeches, file = file.path(master_folder, "education_speeches.csv"), row.names = F)
+```
+Here, I used the regex() function to create a dictionary and separate just the education-related
+speeches from my initial sample and apply the dictionary to filter for education-related speeches, which gave me 60,833 obs. of 22 variables. 
+
+##Looking At Trends in Sample
+```{r}
+educ_over_time <- education_speeches %>% 
+  mutate(speechmonth = as.Date(paste0(substr(speechdate, 1, 7), "-01"))) %>% 
+  group_by(year) %>% 
+  count() %>% 
+  mutate(prop = n/60833*100) %>% ungroup()
+
+educ_over_time %>% 
+  mean_ci(prop)
+
+ggplot(educ_over_time, aes(x = year, y = prop)) +
+  geom_line(color = "orange", linewidth = 1.2) +
+  geom_hline(yintercept = .8547009, linetype = "longdash") +
+  theme_bw() +
+  scale_x_continuous(limits = c(1900, 2020), breaks = seq(1910, 2010, by = 20), expand = c(0,0)) +
+  scale_y_continuous(limits = c(0, 2.5), breaks = seq(0.25, 2.25, by = 0.5), expand = c(0,0), labels = function(x) paste0(x, "%")) +
+  labs(x = "Year", y = "Sample Proportion of Speeches")
+```
+Here, I looked at trends in the sample to make sense of any changes in prevalence over time. 
+When doing preliminary research, I found that the increases in prevalence 
+correspond to periods in Canadian history when education is a salient topic, which makes sense. 
+Here, despite the sample proportion of speeches being generally low overall, 
+there are still clear spikes which are correlated with national education events. 
+
+
+##Constructing and Cleaning my Corpus
+```{r}
+education_speeches <- education_speeches %>% 
+  mutate(speechmonth = as.Date(paste0(substr(speechdate, 1, 7), "-01"))) 
+
+#Create a month variable
+education_speeches <- education_speeches %>% 
+  mutate(clean_text = str_replace_all(speechtext, "\\n", "\\."), 
+        clean_text = str_replace_all(clean_text, "\\r", "\\.")) %>% 
+  dplyr::select(-speechtext)
+education_speeches <- education_speeches %>% mutate(clean_text = str_replace_all(clean_text, "-", ""))
+education_speeches <- education_speeches %>% mutate(clean_text = str_replace_all(clean_text, "\\..", "\\."))
+education_speeches <- education_speeches %>% mutate(clean_text = str_replace_all(clean_text, "\\;.f", "\\;"))
+education_speeches <- education_speeches %>% mutate(clean_text = str_replace_all(clean_text, "\\:.f", "\\:"))
+education_speeches <- education_speeches %>% mutate(clean_text = str_replace_all(clean_text, "\\?.", ""))
+education_speeches <- education_speeches %>% mutate(clean_text = str_replace_all(clean_text, "\\:.e", "\\:"))
+education_speeches$clean_text[100]
+```
+ Because this corpus is still rather large, I 
+
+
+##Taking a Sample of the Corpus for Hand-coding
+```{r}
+obj_sample1<- education_speeches %>% #grabbing speeches from before 1990
+  filter(year <= 1990) %>% 
+  group_by(speechmonth) %>% 
+  slice_sample(n = 6)
+
+obj_sample2<- education_speeches %>% 
+  filter(year > 1990) %>% 
+  group_by(speechmonth) %>%  #grabbing speeches from after 1990
+  slice_sample(n = 12)
+
+sample <- full_join(obj_sample1, obj_sample2)
+
+sample <- sample %>% 
+  select(-c(hid, opid, source_file, source_path, speakerurl, pid, speakeroldname, speakerposition, )) #is my corpus
+
+ksample<- sample %>% ungroup() %>% 
+  slice_sample(n = 200)
+
+write.csv(ksample,
+          file = file.path(master_folder, "khandcoding.csv"),
+          row.names = FALSE)
+```
+
+
+
+
+
+##Validating Hand-coding Against LLM coding
+```{r}
+indig_ed<- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/zero_shot_indig.csv")
+lang_ed<- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/zero_shot_langed.csv")
+afford_ed<- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/zero_shot_afforded.csv")
+univ_ed<- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/zero_shot_unived.csv")
+skills_ed<- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/zero_shot_skillsed.csv")
+elc_ed<- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/zero_shot_elced.csv")
+fed_ed<- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/zero_shot_feded.csv")
+
+khand <- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/khandcoding.csv")
+indig_ed <- indig_ed[, c(1:16)]
+
+predictions <-full_join(indig_ed, lang_ed)
+predictions <-full_join(predictions, afford_ed)
+predictions <-full_join(predictions, univ_ed)
+predictions <-full_join(predictions, skills_ed)
+predictions <-full_join(predictions, elc_ed)
+predictions <-full_join(predictions, fed_ed)
+
+newmain <-full_join(predictions, khand)
+
+
+#Calculating Cohen's Kappa
+indigkp <- kappa2(newmain[,c(16,23)], "unweighted") #indig_ed
+langedkp <- kappa2(newmain[,c(17,24)], "unweighted") #lang_ed
+affordkp <- kappa2(newmain[,c(18,25)], "unweighted") #afford_ed
+univkp <- kappa2(newmain[,c(19,26)], "unweighted") #univ_ed
+skillskp <- kappa2(newmain[,c(20,27)], "unweighted") #skills_ed
+elckp <- kappa2(newmain[,c(21,28)], "unweighted") #elc_ed
+fedkp <- kappa2(newmain[,c(22,29)], "unweighted") #fed_ed
+
+
+
+#Calculating Krippendorffs Alpha
+indigmat <-t(as.matrix(newmain[, c(16, 23)]))
+indigka <- kripp.alpha(indigmat, method = "nominal")
+
+langmat <-t(as.matrix(newmain[, c(17, 24)]))
+langka <- kripp.alpha(langmat, method = "nominal")
+
+affordmat <-t(as.matrix(newmain[, c(18, 25)]))
+affordka <- kripp.alpha(affordmat, method = "nominal")
+
+univmat <-t(as.matrix(newmain[, c(19, 26)]))
+univka <- kripp.alpha(univmat, method = "nominal")
+
+skillsmat <-t(as.matrix(newmain[, c(20, 27)]))
+skills <- kripp.alpha(skillsmat, method = "nominal")
+
+elcmat <-t(as.matrix(newmain[, c(21, 28)]))
+elcka <- kripp.alpha(elcmat, method = "nominal")
+
+fedmat <-t(as.matrix(newmain[, c(22, 29)]))
+fedka <- kripp.alpha(fedmat, method = "nominal")
+
+
+#Making a Table
+kappas <- c(indigkp$value, langedkp$value, affordkp$value, univkp$value, skillskp$value, elckp$value, fedkp$value)
+alphas <- c(indigka$value, langka$value, affordka$value, univka$value, skills$value, elcka$value, fedka$value)
+compar_table <- cbind(kappas, alphas)
+
+print(compar_table)
+```
+The results of my CK and KA scores are helpful for determining whether my 
+current codebook is appropriate for the rest of this project and generally 
+testing my expectations of the data. Cohen's alpha scores ranged from .28 to
+.66, while Krippendorff's alpha ranged from .275 to .665. The similarty between 
+these two measures suggests that there is a clear pattern of agreement, however,
+how low these scores are also suggest that the model performance varies 
+considerably by label. There were three labels which received moderate scores 
+(3, 5, 6), while the other 4 showed weaker agreement. In all, these validation 
+results suggest that mentions of education affordability (3), skills/training(5), 
+and early learning and childhood education(6) are more reliably identified in 
+the data than the other categories. While coding, I did find that education 
+was discussed in other ways not covered by my codebook, including more general 
+mentions of education as well as immigration/student visas, and religion and 
+education. From here, I think it makes sense to update my codebook to account 
+for these and do additional fine-tuning after this to try and get more robust findings. 
+
+
+
+
+
+#Part 2
+
+
+##Expanding the Training Set/Creating a Dictionary for Each Topic
+```{r}
+
+#Creating individual dictionaries for each topic 
+ed_indig <- regex(
+  "First Nation|Inuit|Métis|Indigenous|residential school|reconciliation|aborigin|native|Indian|treaty nation|treaty right|Charter right",
+  ignore_case = TRUE)
+
+ed_lang <- regex(
+  "bilingual|multilingual|language|minority|mother tongue|linguist|immersion|oral proficiency|transla|anglophone|francophone|french|english|FSL|ESL|pluraling|OLMC|section 23|fluency",
+  ignore_case = TRUE)
+
+ed_afford <- regex(
+  "afford|cost|financ||econom|barrier|burden|obstac|price|need-based|aid|expenses|tuition|hike|freeze|increase|fee|childcare|grant|bursar|scholarship|loan|debt|deliquin|arrear|intern|savings|access|RESP|OSAP|student assist|subsid|welfare|mobili|insecur|precar|fellowship",
+  ignore_case = TRUE)
+
+ed_univ <- regex(
+  "universi|college|campus|facult|department|school|institut|academ|postsec|post-sec|higher ed|board|rector|provost|dean|registrar|admission|enrolment|student|graduat|alumn|tenure|adjunct|professor|lecturer|instructor|scholar|curricul|pedagog|teach|learn|classroom|endowment|research|inquir|investig|discover|experimen|evidence|analysis|methodol|fieldwork|peer review|science|preprint|REB|IRB|interdiscipli|multidiscipli|transdiscipli|postdoc|post-doc|doctoral|dissertat|grant|fund|innovat|prototyp|patent|R&D|development|STEM|science|engineering|medicine|humanities|EDI|retention|DEI|practicum|Tri-Council|SSHRC|NSERC|CIHR|CFI",
+  ignore_case = TRUE)
+
+ed_skills <- regex(
+  "skill|train|work|employ|job|vocat|technic|apprentic|certific|credent|qualification|competenc|proficien|literacy|numeracy|transferable|practical|occupat|readi|human capital|adult|lifelong|experien|cooperative|co-op|intern|practicum|labour|market|profession|career|hir|recruit|mobili|promotion|advance|produc|trade|craft|applied learn|accred|talent|capaci|compet|indust|business|placement|attain|progression|PLA|counsel|mentor|support|guid",
+  ignore_case = TRUE)
+
+ed_elc <- regex(
+  "early learn|childcare|child care|early child|ELC|ECE|presch|pre-school|pre-k|kinder|child|daycare|day care|family|parent|infant|toddler|nursery|caregive|matern|patern|CWELCC|ELCC",
+  ignore_case = TRUE)
+
+ed_fed <- regex(
+  "feder|provinc|territor|municip|local|intergov|multilevel|multi-level|shared gov|divided power|constitution|jurisdic|coordinat|asymmet|region|authority|mandate|regulat|govern|section 23|treaty|Charter|court|judic|litig|statut|concurrent|fragmentation|patchwork|harmoniz|complianc|enforce|implement|spend|expend|fiscal|budget|financ|appropria|line item|allocat|transfer|grant|endow|subsid|tax|performance|minist|cabinet|agency|commission|bureaucra|audit|evaluat|equity|agenda|auster|invest|account",
+  ignore_case = TRUE)
+
+#Applying the dictionaries 
+indig_speeches <- education_speeches %>%
+  filter(str_detect(clean_text, ed_indig))
+
+lang_speeches <- education_speeches %>%
+  filter(str_detect(clean_text, ed_lang))
+
+afford_speeches <- education_speeches %>%
+  filter(str_detect(clean_text, ed_afford))
+
+univ_speeches <- education_speeches %>%
+  filter(str_detect(clean_text, ed_univ))
+
+skills_speeches <- education_speeches %>%
+  filter(str_detect(clean_text, ed_skills))
+
+elc_speeches <- education_speeches %>%
+  filter(str_detect(clean_text, ed_elc))
+
+fed_speeches <- education_speeches %>%
+  filter(str_detect(clean_text, ed_fed))
+
+head(indig_speeches$clean_text)
+
+#Writing Speeches to CSV
+write.csv(indig_speeches, 
+          file = file.path(master_folder, "indigspeches.csv"), 
+          row.names = F)
+write.csv(lang_speeches,
+          file = file.path(master_folder, "langspeeches.csv"),
+          row.names = FALSE)
+write.csv(afford_speeches,file = file.path(master_folder, "affordspeeches.csv"),
+          row.names = FALSE)
+write.csv(univ_speeches,
+          file = file.path(master_folder, "univspeeches.csv"),
+          row.names = FALSE)
+write.csv(skills_speeches,
+          file = file.path(master_folder, "skillsspeeches.csv"),
+          row.names = FALSE)
+write.csv(elc_speeches,
+          file = file.path(master_folder, "elcspeeches.csv"),
+          row.names = FALSE)
+write.csv(fed_speeches,
+          file = file.path(master_folder, "fedspeeches.csv"),
+          row.names = FALSE)
+
+#Fine Tuning Prep
+
+indig150 <- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/indigspeches.csv")
+lang150 <- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/langspeeches.csv")
+afford150 <- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/affordspeeches.csv")
+univ150 <- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/univspeeches.csv")
+skills150 <- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/skillsspeeches.csv")
+elc150 <- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/elcspeeches.csv")
+fed150 <- read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/fedspeeches.csv")
+
+#Filtering out the labeled data and unique character
+indig150 <- indig150 %>% 
+  filter(indg_pos == 1) %>% 
+  select(c(basepk, indg_pos))
+
+lang150 <- lang150 %>% 
+  filter(langpos == 1) %>% 
+  select(c(basepk, langpos))
+
+afford150 <- afford150 %>% 
+  filter(affordpos == 1) %>% 
+  select(c(basepk, affordpos))
+
+univ150 <- univ150 %>% 
+  filter(univpos == 1) %>% 
+  select(c(basepk, univpos))
+
+skills150 <- skills150 %>% 
+  filter(skillpos == 1) %>% 
+  select(c(basepk, skillpos))
+
+elc150 <- elc150 %>% 
+  filter(elcpos == 1) %>% 
+  select(c(basepk, elcpos))
+
+fed150 <- fed150 %>% 
+  filter(fedpos == 1) %>% 
+  select(c(basepk, fedpos))
+
+#Joining
+
+indig150  <- indig150  %>% mutate(basepk = as.character(basepk))
+lang150   <- lang150   %>% mutate(basepk = as.character(basepk))
+afford150 <- afford150 %>% mutate(basepk = as.character(basepk))
+univ150   <- univ150   %>% mutate(basepk = as.character(basepk))
+skills150 <- skills150 %>% mutate(basepk = as.character(basepk))
+elc150    <- elc150    %>% mutate(basepk = as.character(basepk))
+fed150    <- fed150    %>% mutate(basepk = as.character(basepk))
+newmain   <- newmain   %>% mutate(basepk = as.character(basepk))
+
+positives <-full_join(indig150, lang150)
+positives <-full_join(positives,afford150 )
+positives <-full_join(positives, skills150)
+positives <-full_join(positives, elc150)
+positives <-full_join(positives, fed150)
+positives <-full_join(positives, univ150)
+
+newmain2 <- full_join(positives, newmain, by = "basepk")
+
+table(newmain2$affordpos)
+```
+
+#Create a Function to Make the Training Files
+```{r}
+khand_full <- read_csv(
+  "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/khandcoding.csv",
+  show_col_types = FALSE
+) %>%
+  mutate(basepk = as.character(basepk))
+
+build_topic_train <- function(topic_file, khand_col, topic_col, out_file) {
+  
+  topic_df <- read_csv(topic_file, show_col_types = FALSE) %>%
+    mutate(basepk = as.character(basepk))
+  
+  # Original hand-coded sample for this topic
+  base_df <- khand_full %>%
+  transmute(
+    basepk = as.character(basepk),
+    clean_text = clean_text,
+    label = as.integer(.data[[khand_col]])
+  ) %>%
+  filter(label %in% c(0, 1))
+  
+  # Expanded checked topic file for this topic
+  extra_df <- topic_df %>%
+  transmute(
+    basepk = as.character(basepk),
+    clean_text = clean_text,
+    label = as.integer(.data[[topic_col]])
+  ) %>%
+  filter(label %in% c(0, 1))
+  
+  # Combine both sources
+  combined <- bind_rows(
+    base_df %>% mutate(source = "khand"),
+    extra_df %>% mutate(source = "topic")
+  )
+  
+  # Flag duplicates where labels disagree
+  conflicts <- combined %>%
+    group_by(basepk) %>%
+    summarise(
+      n_rows = n(),
+      n_labels = n_distinct(label),
+      labels = paste(sort(unique(label)), collapse = ","),
+      .groups = "drop"
+    ) %>%
+    filter(n_labels > 1)
+  
+  # Keep one row per basepk; if duplicated, prefer khand version
+  final_df <- combined %>%
+    arrange(basepk, desc(source == "khand")) %>%
+    distinct(basepk, .keep_all = TRUE) %>%
+    select(basepk, clean_text, label) %>%
+    filter(!is.na(clean_text), clean_text != "")
+  
+  write_csv(final_df, out_file)
+  
+  list(
+    data = final_df,
+    conflicts = conflicts,
+    counts = table(final_df$label)
+  )
+}
+
+
+#Apply the function for each of the topics and write individual CSVs
+
+indig_train_res <- build_topic_train(
+  topic_file = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/indigspeches.csv",
+  khand_col = "indig_ed",
+  topic_col  = "indg_pos",
+  out_file   = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/indig_train.csv"
+)
+
+indig_train_res$counts
+
+
+lang_train_res <- build_topic_train(
+  topic_file = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/langspeeches.csv",
+  khand_col = "lang_ed",
+  topic_col  = "langpos",
+  out_file   = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/lang_train.csv"
+)
+lang_train_res$counts
+
+afford_train_res <- build_topic_train(
+  topic_file = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/affordspeeches.csv",
+  khand_col = "afford_ed",
+  topic_col  = "affordpos",
+  out_file   = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/afford_train.csv"
+)
+
+afford_train_res$counts
+
+univ_train_res <- build_topic_train(
+  topic_file = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/univspeeches.csv",
+   khand_col = "univ_ed",
+  topic_col  = "univpos",
+  out_file   = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/univ_train.csv"
+)
+univ_train_res$counts
+
+skills_train_res <- build_topic_train(
+  topic_file = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/skillsspeeches.csv",
+   khand_col = "skills_ed",
+  topic_col  = "skillpos",
+  out_file   = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/skills_train.csv"
+)
+skills_train_res$counts
+
+elc_train_res <- build_topic_train(
+  topic_file = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/elcspeeches.csv",
+   khand_col = "elc_ed",
+  topic_col  = "elcpos",
+  out_file   = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/elc_train.csv"
+)
+elc_train_res$counts
+
+fed_train_res <- build_topic_train(
+  topic_file = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Topic CSVs/fedspeeches.csv",
+   khand_col = "fed_ed",
+  topic_col  = "fedpos",
+  out_file   = "C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/fed_train.csv"
+)
+
+fed_train_res$counts
+
+```
+#Analysing the Results from the Models and Making Images
+```{r}
+#reading in the final prediction CVs
+in_fin_pred <-read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Final Predictions/indig_predictions.csv")
+lan_fin_pred <-read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Final Predictions/lang_predictions.csv")
+af_fin_pred <-read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Final Predictions/afford_predictions.csv")
+sk_fin_pred <-read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Final Predictions/skills_predictions.csv")
+un_fin_pred <-read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Final Predictions/univ_predictions.csv")
+el_fin_pred <-read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Final Predictions/elc_predictions.csv")
+fe_fin_pred <-read_csv("C:/Users/KaylynnTemp/Documents/Winter2026PhD/Text Analysis/Final Project/Final Predictions/fed_predictions.csv")
+
+
+final <- full_join(in_fin_pred, lan_fin_pred)
+final <- full_join(final, af_fin_pred)
+final <- full_join(final, sk_fin_pred)
+final <- full_join(final, un_fin_pred)
+final <- full_join(final, el_fin_pred)
+final <- full_join(final, fe_fin_pred)
+
+
+final <-final %>%  
+  select(c(basepk, speechdate, speechmonth, year, month, day, weekday, 
+           speakerparty, clean_text, indig_pred, indig_conf, lang_pred, lang_conf, 
+           skills_pred, skills_conf, univ_pred, univ_conf, elc_pred, elc_conf, 
+           afford_pred, afford_conf, fed_pred, fed_conf))
+
+final <- final %>% 
+  filter(!is.na(indig_pred) & !is.na(lang_pred) & !is.na(skills_pred) & 
+           !is.na(univ_pred) & !is.na(elc_pred) & !is.na(afford_pred) & 
+           !is.na(fed_pred))
+
+
+
+topics <- final %>% 
+  group_by(year) %>% 
+  summarise(indig = mean(indig_pred),
+            lang = mean(lang_pred), 
+            afford = mean(afford_pred), 
+            skills = mean(skills_pred), 
+            univ = mean(univ_pred), 
+            elc = mean(elc_pred), 
+            fed = mean(fed_pred), 
+            n = n(), 
+            indig_sd = sd(indig_pred),
+            lang_sd = sd(lang_pred), 
+            afford_sd = sd(afford_pred), 
+            skills_sd = sd(skills_pred), 
+            univ_sd = sd(univ_pred), 
+            elc_sd = sd(elc_pred), 
+            fed_sd = sd(fed_pred)) %>% 
+  mutate(indig_upper = indig + 1.96*indig_sd/sqrt(n),
+         indig_lower = indig - 1.96*indig_sd/sqrt(n),
+         lang_upper = lang + 1.96*lang_sd/sqrt(n),
+         lang_lower = lang - 1.96*lang_sd/sqrt(n),
+         afford_upper = afford + 1.96*afford_sd/sqrt(n),
+         afford_lower = afford - 1.96*afford_sd/sqrt(n),
+         skills_upper = skills + 1.96*skills_sd/sqrt(n),
+         skills_lower = skills - 1.96*skills_sd/sqrt(n),
+         univ_upper = univ + 1.96*univ_sd/sqrt(n),
+         univ_lower = univ - 1.96*univ_sd/sqrt(n),
+         elc_upper = elc + 1.96*elc_sd/sqrt(n),
+         elc_lower = elc - 1.96*elc_sd/sqrt(n),
+         fed_upper = fed + 1.96*fed_sd/sqrt(n),
+         fed_lower = fed - 1.96*fed_sd/sqrt(n))
+
+topics %>% 
+  ungroup() %>% 
+  summarize(indig = mean(indig),
+            lang = mean(lang), 
+            afford = mean(afford), 
+            skills = mean(skills), 
+            univ = mean(univ), 
+            elc = mean(elc), 
+            fed = mean(fed))
+
+#Topics By Year
+ggplot(topics, aes(x = year)) +
+  geom_line(aes(y = indig, ymin = indig_lower, ymax = indig_upper, color = "Indigenous"), linewidth = 1.2) +
+   geom_line(aes(y = lang, ymin = lang_lower, ymax = lang_upper, color = "Minority Language"), linewidth = 1.2) +
+   geom_line(aes(y = afford, ymin = afford_lower, ymax = afford_upper, color = "Affordability"), linewidth = 1.2) +
+   geom_line(aes(y = skills, ymin = skills_lower, ymax = skills_upper, color = "Skill Acquisition"), linewidth = 1.2) +
+   geom_line(aes(y = univ, ymin = univ_lower, ymax = univ_upper, color = "Research"),  linewidth = 1.2) +
+   geom_line(aes(y = elc, ymin = elc_lower, ymax = elc_upper, color = "Early Learning"),  linewidth = 1.2) +
+   geom_line(aes(y = fed, ymin = fed_lower, ymax = fed_upper, color = "Federalism"), linewidth = 1.2) +
+  theme_bw() +
+  scale_color_manual(values = c("darkgreen", "darkblue", "darkred","black", "darkorange", "darkgoldenrod","darkcyan")) +
+  scale_x_continuous(limits = c(1900, 2020), breaks = seq(1910, 2010, by = 20), expand = c(0,0)) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0.1, 0.9, by = 0.2), expand = c(0,0), labels = function(x) paste0(x*100, "%")) +
+  labs(x = "Year", y = "Sample Proportion of Topics")
+```
+
+
+```{r, fig.width= 15, fig.height= 10}
+topicmeans <- final %>% 
+  ungroup() %>% 
+   summarise(indig_ = mean(indig_pred),
+            lang_ = mean(lang_pred), 
+            afford_ = mean(afford_pred), 
+            skills_ = mean(skills_pred), 
+            univ_ = mean(univ_pred), 
+            elc_ = mean(elc_pred), 
+            fed_ = mean(fed_pred), 
+            n = n(), 
+            indig_sd = sd(indig_pred),
+            lang_sd = sd(lang_pred), 
+            afford_sd = sd(afford_pred), 
+            skills_sd = sd(skills_pred), 
+            univ_sd = sd(univ_pred), 
+            elc_sd = sd(elc_pred), 
+            fed_sd = sd(fed_pred)) %>% 
+  mutate(indig_upper = indig_ + 1.96*indig_sd/sqrt(n),
+         indig_lower = indig_ - 1.96*indig_sd/sqrt(n),
+         lang_upper = lang_ + 1.96*lang_sd/sqrt(n),
+         lang_lower = lang_ - 1.96*lang_sd/sqrt(n),
+         afford_upper = afford_ + 1.96*afford_sd/sqrt(n),
+         afford_lower = afford_ - 1.96*afford_sd/sqrt(n),
+         skills_upper = skills_ + 1.96*skills_sd/sqrt(n),
+         skills_lower = skills_ - 1.96*skills_sd/sqrt(n),
+         univ_upper = univ_ + 1.96*univ_sd/sqrt(n),
+         univ_lower = univ_ - 1.96*univ_sd/sqrt(n),
+         elc_upper = elc_ + 1.96*elc_sd/sqrt(n),
+         elc_lower = elc_ - 1.96*elc_sd/sqrt(n),
+         fed_upper = fed_ + 1.96*fed_sd/sqrt(n),
+         fed_lower = fed_ - 1.96*fed_sd/sqrt(n))
+
+temp <- topicmeans %>% 
+  pivot_longer(
+    cols = matches("^(indig|lang|skills|univ|elc|fed|afford)"), 
+    names_to = c("Topic", ".value"), 
+    names_pattern = "(indig|lang|skills|univ|elc|fed|afford)(.*)"
+  ) %>% 
+  mutate(label = case_when(Topic == "indig" ~ "Indigenous", Topic == "lang" ~ "Minority Language", 
+                           Topic == "afford" ~ "Affordability", Topic == "skills" ~ "Skill Acquisition", 
+                           Topic == "univ" ~ "Research", Topic == "elc" ~ "Early Learning", 
+                           Topic == "fed" ~ "Federalism"))
+
+
+#Overall Proportion of Topic in Sample
+ggplot(temp, aes(x = reorder(label, `_`) , y = `_`, ymin = `_lower`, ymax = `_upper`, fill = label)) +
+  geom_col(color = "black") +
+  geom_errorbar(width = 0.5, color = "black") +
+  theme_bw() +
+  theme(legend.position = "") +
+  scale_fill_manual(values = c("darkgreen", "darkblue", "darkred","black", "darkorange", "darkgoldenrod","darkcyan")) +
+  scale_y_continuous(limits = c(0, .8), breaks = seq(0.1, 0.7, by = 0.2), expand = c(0,0), labels = function(x) paste0(x*100, "%")) +
+  labs(x = "Education Topic", y = "Proportion of Topics")
+
+
+#Liberal, Conservative, NDP, New Democratic Party Bloc Québécois, Reform, Social Credit, Progressive Conservative, Conservative (1867-1942), Co-operative Commonwealth Federation (C.C.F.), Canadian Alliance
+
+#Topics by Party
+pidtop <- final %>% 
+  ungroup() %>% 
+  group_by(speakerparty) %>% 
+  filter(!is.na(speakerparty)) %>% 
+  filter(speakerparty == "Liberal" | speakerparty == "Conservative" | speakerparty == "New Democratic Party" | speakerparty == "Bloc Québécois" | speakerparty == "Reform" |speakerparty == "Social Credit" | speakerparty == "Progressive Conservative" | speakerparty == "Conservative (1867-1942)" | speakerparty == "Co-operative Commonwealth Federation (C.C.F.)" | speakerparty == "Canadian Alliance") %>% 
+   summarise(indig_ = mean(indig_pred),
+            lang_ = mean(lang_pred), 
+            afford_ = mean(afford_pred), 
+            skills_ = mean(skills_pred), 
+            univ_ = mean(univ_pred), 
+            elc_ = mean(elc_pred), 
+            fed_ = mean(fed_pred), 
+            n = n(), 
+            indig_sd = sd(indig_pred),
+            lang_sd = sd(lang_pred), 
+            afford_sd = sd(afford_pred), 
+            skills_sd = sd(skills_pred), 
+            univ_sd = sd(univ_pred), 
+            elc_sd = sd(elc_pred), 
+            fed_sd = sd(fed_pred)) %>% 
+  mutate(indig_upper = indig_ + 1.96*indig_sd/sqrt(n),
+         indig_lower = indig_ - 1.96*indig_sd/sqrt(n),
+         lang_upper = lang_ + 1.96*lang_sd/sqrt(n),
+         lang_lower = lang_ - 1.96*lang_sd/sqrt(n),
+         afford_upper = afford_ + 1.96*afford_sd/sqrt(n),
+         afford_lower = afford_ - 1.96*afford_sd/sqrt(n),
+         skills_upper = skills_ + 1.96*skills_sd/sqrt(n),
+         skills_lower = skills_ - 1.96*skills_sd/sqrt(n),
+         univ_upper = univ_ + 1.96*univ_sd/sqrt(n),
+         univ_lower = univ_ - 1.96*univ_sd/sqrt(n),
+         elc_upper = elc_ + 1.96*elc_sd/sqrt(n),
+         elc_lower = elc_ - 1.96*elc_sd/sqrt(n),
+         fed_upper = fed_ + 1.96*fed_sd/sqrt(n),
+         fed_lower = fed_ - 1.96*fed_sd/sqrt(n))
+
+
+
+pidtemp <- pidtop %>% 
+  pivot_longer(
+    cols = matches("^(indig|lang|skills|univ|elc|fed|afford)"), 
+    names_to = c("Topic", ".value"), 
+    names_pattern = "(indig|lang|skills|univ|elc|fed|afford)(.*)"
+  ) %>% 
+  mutate(label = case_when(Topic == "indig" ~ "Indigenous", Topic == "lang" ~ "Minority Language", 
+                           Topic == "afford" ~ "Affordability", Topic == "skills" ~ "Skill Acquisition", 
+                           Topic == "univ" ~ "Research", Topic == "elc" ~ "Early Learning", 
+                           Topic == "fed" ~ "Federalism"))
+
+
+#Party Topic Proportion
+ggplot(pidtemp, aes(x = reorder(label, `_`) , y = `_`, ymin = `_lower`, ymax = `_upper`, fill = label)) +
+  geom_col(color = "black") +
+  geom_errorbar(width = 0.5, color = "black") +
+  theme_bw() +
+  theme(legend.position = "", 
+        axis.title = element_text(size = 16), axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 14), strip.text = element_text(size = 14)) +
+  facet_wrap(~speakerparty, ncol = 2) +
+  scale_fill_manual(values = c("darkgreen", "darkblue", "darkred","black", "darkorange", "darkgoldenrod","darkcyan")) +
+  scale_y_continuous(limits = c(0, .9), breaks = seq(0.2, 0.8, by = 0.2), expand = c(0,0), labels = function(x) paste0(x*100, "%")) +
+  labs(x = "Education Topic", y = "Proportion of Topics")
+
+ggsave("partyprop.jpg", plot = last_plot(), width = 15, height = 10, dpi = 500)
+```
+#Exemplar Quotes for Report
+
+```{r}
+#Define quotes directly
+quote_panels <- c(
+  affordability = "Does the minister not realize that besides doubling tuition fees, his reform helps to double students’ indebtedness...?", 
+  childcare = "As a result of the early learning and childcare agreement signed with Ontario, Halton will receive 500 new spaces over the next three years. The childcare spaces will primarily be located in or near schools so that junior and senior kindergarten students can benefit from a seamless full day of learning and childcare...",
+skills =  "They voted against increased investments in job training. They have voted against every constructive measure: the Canada apprenticeship loan, the Canada job grant, and the incentive grant for new apprentices...")
+
+
+panel_labels <- c("A", "B", "C")
+
+jpeg("figure_exemplar_quotes.jpg", width = 10, height = 3.5, units = "in", res = 300)
+
+# smaller margins so panels sit closer together
+par(mfrow = c(1, 3),
+    mar = c(0.3, 0.3, 1.2, 0.3),   # inner margins around each panel
+    oma = c(0, 0, 1.5, 0),         # outer margins for overall title
+    xpd = NA)
+
+for (i in seq_along(quote_panels)) {
+  
+  plot.new()
+  plot.window(xlim = c(0, 1), ylim = c(0, 1))
+  
+  # smaller box inside each panel
+  rect(0.08, 0.12, 0.92, 0.88, border = "grey60", lwd = 1.5)
+  
+  # panel label
+  text(
+    x = 0.12, y = 0.90,
+    labels = panel_labels[i],
+    cex = 0.9,
+    font = 2,
+    family = "sans"
+  )
+  
+  # topic in uppercase
+  text(
+    x = 0.5, y = 0.78,
+    labels = toupper(names(quote_panels)[i]),
+    cex = 0.85,
+    font = 2,
+    family = "sans"
+  )
+  
+  # dividing line under topic
+  segments(0.20, 0.70, 0.80, 0.70, lwd = 1.1, col = "grey50")
+  
+  # wrapped quote
+  quote_text <- paste0(
+    "“",
+    paste(strwrap(quote_panels[i], width = 24), collapse = "\n"),
+    "”"
+  )
+  
+  text(
+    x = 0.5, y = 0.42,
+    labels = quote_text,
+    cex = 0.88,
+    family = "sans"
+  )
+}
+
+mtext("Exemplar Hansard Quotes",
+      outer = TRUE, cex = 1.0, font = 2)
+
+dev.off()
+```
+
