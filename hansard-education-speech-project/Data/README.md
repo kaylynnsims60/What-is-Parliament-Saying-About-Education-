@@ -21,7 +21,7 @@ Date accessed/downloaded: April 2026
 To reproduce the project:
 
 1. Download the raw Hansard data from the source listed above.
-2. Place the raw files in this folder: `Data/raw/`
+2. Place the raw files in this folder: `Data/`
 3. Run the data preparation scripts in the `Code/` folder in the order described in the main repository `README.md`.  
 
 
@@ -43,7 +43,7 @@ Some processed files used in the project were too large to store directly in thi
 
 ## How to Reproduce Processed Files
 
-1. Obtain the raw Hansard data and place those files in `Data/raw/`
+1. Obtain the raw Hansard data and place those files in `Data/`
 2. Run the data preparation and filtering scripts in `Code/`
 3. The resulting processed datasets will be written to this folder
 
