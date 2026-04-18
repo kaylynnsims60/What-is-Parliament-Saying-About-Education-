@@ -12,9 +12,9 @@ These raw files are not stored directly in this GitHub repository because the fu
 
 Raw Hansard data were obtained from a public source.
 
-Source name: [Lipad, Canada Hansard Dataset]  
-Source link: [[(https://www.lipad.ca/data/)]]
-Date accessed/downloaded: [April 2026]
+Source name: Lipad, Canada Hansard Dataset
+Source link: (https://www.lipad.ca/data/)
+Date accessed/downloaded: April 2026
 
 ## How to Use This Folder
 
