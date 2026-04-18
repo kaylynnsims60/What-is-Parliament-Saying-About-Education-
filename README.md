@@ -19,10 +19,8 @@ Instructions for accessing and placing the raw data are provided in `Data/raw/RE
 | `Proposal/` | N/A | Contains the original project proposal, including the research question, data plan, and proposed methods | Proposal document |
 | `Paper/` | Analysis results, figures, tables, and written interpretation | Contains the final essay for the project | Final paper |
 | `Docs/` | N/A | Contains supporting documentation, including the project codebook and coding guidance | Codebook and project documents |
-| `Data/raw/` | Publicly available Hansard source data | Stores or documents the unmodified raw source data used in the project | Raw corpus inputs |
-| `Data/hand_coded/` | Sampled education-related speeches | Stores manually coded validation data used to assess classification and topic coding | Hand-coded validation files |
-| `Data/processed/` | Raw Hansard data | Stores cleaned, filtered, or merged working datasets produced during preprocessing | Processed working data |
-| `Data/derived/` | Processed data | Stores derived analytic files created for downstream analysis | Analysis-ready datasets |
+| `Data/` | Publicly available Hansard source data; sampled speeches for validation | Contains documentation for obtaining and regenerating large raw and processed data files, along with the hand-coded validation files included in the repository | Data documentation and hand-coded validation files |
+| `Data/hand_coded/` | Sampled education-related speeches | Contains the manually coded validation files used to assess and refine the coding or classification approach | Hand-coded validation data |
 | `Code/` | Raw and processed data, codebook, and hand-coded validation data | Contains the scripts used to import, clean, filter, validate, analyze, and visualize the project data | Clean datasets, results, figures, and tables |
 | `Code/Google Colab Scripts/ClassificationModels/` | Prepared text training inputs | Contains Google Colab scripts used to train, test, and apply classification models for the project | Model outputs and labeled data used in later analysis |
 | `Code/Google Colab Scripts/ZeroShot/` | Speech text inputs or prepared samples | Contains Google Colab scripts used for zero-shot classification or related exploratory coding steps | Classification outputs used for comparison and development |
